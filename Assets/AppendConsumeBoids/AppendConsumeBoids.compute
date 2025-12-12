@@ -1,0 +1,252 @@
+﻿#pragma kernel InitializePool
+#pragma kernel UpdateStatus
+#pragma kernel EmitAgent
+#pragma kernel UpdateForce
+#pragma kernel UpdateAgent
+
+#define THREAD_SIZE_X 256 // or 64, 128
+
+struct BoidsAgent
+{
+    float3 position;
+    float3 velocity;
+    float  lifeTime;
+    int    status;
+};
+
+StructuredBuffer  <BoidsAgent> _BoidsAgentBufferRead;
+RWStructuredBuffer<BoidsAgent> _BoidsAgentBufferWrite;
+StructuredBuffer  <float3>     _BoidsForceBufferRead;
+RWStructuredBuffer<float3>     _BoidsForceBufferWrite;
+
+StructuredBuffer       <BoidsAgent> _EmitAgentBuffer;
+AppendStructuredBuffer <uint>       _PooledAgentBufferAppend; // uint means agent ID
+ConsumeStructuredBuffer<uint>       _PooledAgentBufferConsume;
+
+uint  _EmitAgentCount;
+uint  _MaxAgentCount;
+float _MaxAgentSpeed;
+float _MaxAgentForce;
+float _DeltaTime;
+
+float _SeparateRadius;
+float _AlignmentRadius;
+float _CohesionRadius;
+
+float _SeparateWeight;
+float _AlignmentWeight;
+float _CohesionWeight;
+float _AvoidWallWeight;
+
+float4 _WallCenter;
+float4 _WallSize;
+
+float3 limit(float3 vec, float max)
+{
+    float len = length(vec);
+    return max < len && 0 < len ? vec.xyz * (max / len) : vec.xyz;
+}
+
+float3 avoidWall(float3 position)
+{
+    float3 center = _WallCenter.xyz;
+    float3 size   = _WallSize.xyz;
+    float3 force  = 0;
+
+    force.x += (position.x < center.x - size.x * 0.5) ? + 1.0 : 0;
+    force.x += (position.x > center.x + size.x * 0.5) ? - 1.0 : 0;
+
+    force.y += (position.y < center.y - size.y * 0.5) ? + 1.0 : 0;
+    force.y += (position.y > center.y + size.y * 0.5) ? - 1.0 : 0;
+
+    force.z += (position.z < center.z - size.z * 0.5) ? + 1.0 : 0;
+    force.z += (position.z > center.z + size.z * 0.5) ? - 1.0 : 0;
+
+    return force;
+}
+
+[numthreads(THREAD_SIZE_X, 1, 1)]
+void InitializePool(uint3 dtId : SV_DispatchThreadID)
+{
+    if(_MaxAgentCount <= dtId.x)
+    {
+        return;
+    }
+
+    _PooledAgentBufferAppend.Append(dtId.x);
+}
+
+[numthreads(THREAD_SIZE_X, 1, 1)]
+void UpdateStatus(uint3 dtId : SV_DispatchThreadID)
+{
+    const uint agentId = dtId.x;
+
+    if(_MaxAgentCount <= agentId)
+    {
+        return;
+    }
+
+    BoidsAgent agent = _BoidsAgentBufferWrite[agentId];
+
+    if (0 < agent.lifeTime)
+    {
+        agent.lifeTime = agent.lifeTime - _DeltaTime;
+        agent.status   = 0 < agent.lifeTime ? 1 : 0;
+
+        _BoidsAgentBufferWrite[agentId] = agent;
+
+        if (agent.status == 0)
+        {
+            _PooledAgentBufferAppend.Append(agentId);
+        }
+    }
+}
+
+[numthreads(THREAD_SIZE_X, 1, 1)]
+void EmitAgent(uint3 dtId : SV_DispatchThreadID)
+{
+    if(_EmitAgentCount <= dtId.x)
+    {
+        return;
+    }
+
+    BoidsAgent emit    = _EmitAgentBuffer[dtId.x];
+    uint       agentId = _PooledAgentBufferConsume.Consume();
+
+    _BoidsAgentBufferWrite[agentId] = emit;
+}
+
+[numthreads(THREAD_SIZE_X, 1, 1)]
+void UpdateForce(uint3 dtId : SV_DispatchThreadID)
+{
+    const uint agentId = dtId.x;
+
+    if(_MaxAgentCount <= agentId)
+    {
+        return;
+    }
+
+    BoidsAgent agent = _BoidsAgentBufferRead[agentId];
+
+    if(agent.status == 0)
+    {
+        return;
+    }
+
+    float3 P_position = agent.position;
+    float3 P_velocity = agent.velocity;
+
+    float3 sepPosSum = 0;
+    float3 aliVelSum = 0;
+    float3 cohPosSum = 0;
+
+    int sepCount = 0;
+    int aliCount = 0;
+    int cohCount = 0;
+
+    // Sample neighboring agent
+    for (uint i = 0; i < _MaxAgentCount; i++)
+    {
+        BoidsAgent neighbor = _BoidsAgentBufferRead[i];
+
+        if(neighbor.status == 0)
+        {
+            continue;
+        }
+
+        float3 N_position = neighbor.position;
+        float3 N_velocity = neighbor.velocity;
+        float3 diff       = P_position - N_position;
+        float  dist       = length(diff);
+
+        // Separate
+        if (0.0 < dist && dist <= _SeparateRadius)
+        {
+            float3 repulse  = normalize(diff);
+                   repulse /= dist;
+
+            sepPosSum += repulse;
+            sepCount  += 1;
+        }
+
+        // Alignment
+        if (0.0 < dist && dist <= _AlignmentRadius)
+        {
+            aliVelSum += N_velocity;
+            aliCount  += 1;
+        }
+
+        // Cohesion
+        if (dist > 0.0 && dist <= _CohesionRadius)
+        {
+            cohPosSum += N_position;
+            cohCount  += 1;
+        }
+    }
+
+    float3 force    = 0;
+    float3 sepForce = 0;
+    float3 aliForce = 0;
+    float3 cohForce = 0;
+
+    // Separate
+    if (0 < sepCount)
+    {
+        sepForce = sepPosSum / (float)sepCount;
+        sepForce = normalize(sepForce) * _MaxAgentSpeed;
+        sepForce = sepForce - P_velocity;
+        sepForce = limit(sepForce, _MaxAgentForce);
+    }
+
+    // Alignment
+    if (0 < aliCount)
+    {
+        aliForce = aliVelSum / (float)aliCount;
+        aliForce = normalize(aliForce) * _MaxAgentSpeed;
+        aliForce = aliForce - P_velocity;
+        aliForce = limit(aliForce, _MaxAgentForce);
+    }
+
+    // Cohesion
+    if (0 < cohCount)
+    {
+        cohPosSum = cohPosSum / (float)cohCount;
+        cohForce  = cohPosSum - P_position;
+        cohForce  = normalize(cohForce) * _MaxAgentSpeed;
+        cohForce  = cohForce - P_velocity;
+        cohForce  = limit(cohForce, _MaxAgentForce);
+    }
+
+    force += aliForce * _AlignmentWeight;
+    force += cohForce * _CohesionWeight;
+    force += sepForce * _SeparateWeight;
+
+    _BoidsForceBufferWrite[agentId] = force;
+}
+
+[numthreads(THREAD_SIZE_X, 1, 1)]
+void UpdateAgent(uint3 dtId : SV_DispatchThreadID)
+{
+    const uint agentId = dtId.x;
+
+    if(_MaxAgentCount <= agentId)
+    {
+        return;
+    }
+
+    BoidsAgent agent = _BoidsAgentBufferWrite[agentId];
+
+    if(agent.status == 0)
+    {
+        return;
+    }
+
+    float3 force  = _BoidsForceBufferRead[agentId];
+           force += avoidWall(agent.position) * _AvoidWallWeight;
+
+    agent.velocity += force * _DeltaTime;
+    agent.velocity = limit(agent.velocity, _MaxAgentSpeed);
+    agent.position += agent.velocity * _DeltaTime;
+
+    _BoidsAgentBufferWrite[agentId] = agent;
+}
