@@ -268,26 +268,22 @@ public partial class AppendConsumeBoids : MonoBehaviour
 
         cs.SetFloat(PID._DeltaTime, Time.deltaTime);
 
-        // UpdateStatus
         threadGroups = GetThreadGroups(boidsParameter.maxAgentCount, _threadGroupSizeUpdateStatus);
         cs.Dispatch(_kernelIndexUpdateStatus, threadGroups.x, threadGroups.y, threadGroups.z);
 
-        // EmitAgent
         var emitAgentCount = _emitAgentsBuffer.Count;
         threadGroups = GetThreadGroups(emitAgentCount, _threadGroupSizeEmitAgent);
         if (0 < threadGroups.x)
         {
             cs.SetInt(PID._EmitAgentCount, emitAgentCount);
             EmitAgentBuffer.SetData(_emitAgentsBuffer);
-            cs.SetBuffer(_kernelIndexEmitAgent, PID._EmitAgentBuffer,          EmitAgentBuffer);
+            cs.SetBuffer(_kernelIndexEmitAgent, PID._EmitAgentBuffer, EmitAgentBuffer);
             cs.Dispatch (_kernelIndexEmitAgent, threadGroups.x, threadGroups.y, threadGroups.z);
         }
 
-        // UpdateForce
         threadGroups = GetThreadGroups(boidsParameter.maxAgentCount, _threadGroupSizeUpdateForce);
         cs.Dispatch(_kernelIndexUpdateForce, threadGroups.x, threadGroups.y, threadGroups.z);
 
-        // UpdateAgent
         threadGroups = GetThreadGroups(boidsParameter.maxAgentCount, _threadGroupSizeUpdateAgent);
         cs.Dispatch(_kernelIndexUpdateAgent, threadGroups.x, threadGroups.y, threadGroups.z);
 
