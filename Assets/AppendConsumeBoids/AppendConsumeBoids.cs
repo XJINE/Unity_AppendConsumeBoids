@@ -132,6 +132,7 @@ public partial class AppendConsumeBoids : MonoBehaviour
 
     private void Update()
     {
+        // Update Pool data before Simulate() for mouse click check
         GraphicsBuffer.CopyCount(PooledAgentBuffer, PooledCountBuffer, 0);
         PooledCountBuffer.GetData(_pooledCountBuffer);
         PooledAgentCount = (int)_pooledCountBuffer[0];
@@ -317,13 +318,12 @@ public partial class AppendConsumeBoids : MonoBehaviour
 
         // Emit
         var emitAgentCount = _emitAgentsBuffer.Count;
-
         if (0 < emitAgentCount)
         {
             threadGroups = GetThreadGroups(emitAgentCount, _tgsEmitAgent);
-
             EmitAgentBuffer.SetData(_emitAgentsBuffer);
-            cs.SetInt   (PID._EmitAgentCount, emitAgentCount);
+
+            cs.SetInt(PID._EmitAgentCount, emitAgentCount);
             cs.SetBuffer(_kernelEmitAgent, PID._EmitAgentBuffer, EmitAgentBuffer);
             cs.Dispatch (_kernelEmitAgent, threadGroups.x, threadGroups.y, threadGroups.z);
         }
@@ -332,24 +332,39 @@ public partial class AppendConsumeBoids : MonoBehaviour
         threadGroups = GetThreadGroups(boidsParameter.maxAgentCount, _tgsUpdateAgent);
         cs.Dispatch(_kernelUpdateAgent, threadGroups.x, threadGroups.y, threadGroups.z);
 
-        // Sort Agents
-        var agentCount    = boidsParameter.maxAgentCount;
-        var sortBlockSize = 2;
-
-        threadGroups = GetThreadGroups(agentCount, _tgsBitonicSort);
+        // Sort
+        var agentCount = boidsParameter.maxAgentCount;
         cs.SetInt(PID._AgentCount, agentCount);
+        
+        // Calculate padded size (next power of 2)
+        var numElement = (uint)agentCount;
+        var log2NumElement = 0;
+        var temp = numElement;
 
-        while (sortBlockSize <= agentCount)
+        while (1 < temp)
         {
-            var sortBlockWidth  = sortBlockSize;
-            var sortBlockHeight = sortBlockSize / 2;
-            
-            cs.SetInt(PID._SortBlockSize,   sortBlockSize);
-            cs.SetInt(PID._SortBlockWidth,  sortBlockWidth);
-            cs.SetInt(PID._SortBlockHeight, sortBlockHeight);
-            cs.Dispatch(_kernelBitonicSort, threadGroups.x, threadGroups.y, threadGroups.z);
+            temp >>= 1; // means temp /= 2
+            log2NumElement++;
+        }
 
-            sortBlockSize *= 2;
+        var paddedSize = 1u << log2NumElement; // means 2 ^ log2NumElement
+
+        if (paddedSize < numElement)
+        {
+            paddedSize <<= 1; // means paddedSize *= 2
+        }
+
+        // Standard Bitonic Sort: outer loop for block size, inner loop for comparison distance
+        for (var k = 2; k <= paddedSize; k <<= 1) // means k *= 2 (block width)
+        {
+            for (var j = k >> 1; j > 0; j >>= 1) // means j /= 2 (comparison distance)
+            {
+                threadGroups = GetThreadGroups((int)paddedSize, _tgsBitonicSort);
+
+                cs.SetInt(PID._SortBlockSize,  (int)j);  // comparison distance
+                cs.SetInt(PID._SortBlockWidth, (int)k);  // block width
+                cs.Dispatch(_kernelBitonicSort, threadGroups.x, threadGroups.y, threadGroups.z);
+            }
         }
 
         // Update Indices
