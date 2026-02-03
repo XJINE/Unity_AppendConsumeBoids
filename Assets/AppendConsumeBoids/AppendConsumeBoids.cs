@@ -72,7 +72,6 @@ public partial class AppendConsumeBoids : MonoBehaviour
     private Vector3Int _tgsUpdateGridIndices;
 
     private uint[]           _pooledCountBuffer;
-    private uint[]           _agentIndexBuffer;
     private List<BoidsAgent> _emitAgentsBuffer;
 
     #endregion Field
@@ -217,12 +216,12 @@ public partial class AppendConsumeBoids : MonoBehaviour
 
         // NOTE:
         // The maxCount should be updated whenever the Buffer is updated.
-        var maxAgentCount = boidsParameter.maxAgentCount;
-        
-        _agentIndexBuffer = new uint[maxAgentCount];
+        var maxAgentCount    = boidsParameter.maxAgentCount;
+        var agentIndexBuffer = new uint[maxAgentCount];
+
         for (uint i = 0; i < maxAgentCount; i++)
         {
-            _agentIndexBuffer[i] = i;
+            agentIndexBuffer[i] = i;
         }
 
         var gridDivision  = fieldParameter.gridDivision;
@@ -248,7 +247,7 @@ public partial class AppendConsumeBoids : MonoBehaviour
         PooledCountBuffer.SetData(_pooledCountBuffer);
 
         AgentIndexBuffer = new GraphicsBuffer(BufferType.Structured, maxAgentCount, Marshal.SizeOf(typeof(uint)));
-        AgentIndexBuffer.SetData(_agentIndexBuffer);
+        AgentIndexBuffer.SetData(agentIndexBuffer);
 
         _emitAgentsBuffer = new List<BoidsAgent>(maxAgentCount);
         EmitAgentBuffer   = new GraphicsBuffer(BufferType.Structured, maxAgentCount, Marshal.SizeOf(typeof(BoidsAgent)));
@@ -276,7 +275,6 @@ public partial class AppendConsumeBoids : MonoBehaviour
         cs.SetBuffer(_kernelUpdateAgent, PID._BoidsForceBufferRead,  BoidsForceBuffer);
 
         cs.SetBuffer(_kernelBitonicSort, PID._BoidsAgentBufferWrite, BoidsAgentBuffer);
-        cs.SetBuffer(_kernelBitonicSort, PID._BoidsAgentBufferRead,  BoidsAgentBuffer);
         cs.SetBuffer(_kernelBitonicSort, PID._AgentIndexBuffer,      AgentIndexBuffer);
 
         cs.SetBuffer(_kernelUpdateGridIndices, PID._BoidsAgentBufferRead, BoidsAgentBuffer);
