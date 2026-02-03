@@ -231,6 +231,14 @@ void UpdateStatus(uint3 dtId : SV_DispatchThreadID)
             _PooledAgentBufferAppend.Append(agentId);
         }
     }
+    else if (agent.status == 1)
+    {
+        // Handle agents with lifeTime <= 0 that are still marked as active
+        // This ensures they are returned to the pool
+        agent.status = 0;
+        _BoidsAgentBufferWrite[agentId] = agent;
+        _PooledAgentBufferAppend.Append(agentId);
+    }
 }
 
 [numthreads(THREAD_SIZE_X, 1, 1)]

@@ -67,7 +67,6 @@ public partial class AppendConsumeBoidsRenderer:MonoBehaviour
          }
      }
 
-     [ContextMenu(nameof(UpdateParameter))]
      public void UpdateParameter()
      {
          var field  = _appendConsumeBoids.FieldParameter;
@@ -81,7 +80,6 @@ public partial class AppendConsumeBoidsRenderer:MonoBehaviour
          agentMaterial.SetVector(PID._AgentScale, agentScale);
      }
 
-     [ContextMenu(nameof(UpdateBuffer))]
      public void UpdateBuffer()
      {
          agentMaterial.SetBuffer(PID._BoidsAgentBuffer, _appendConsumeBoids.BoidsAgentBuffer);

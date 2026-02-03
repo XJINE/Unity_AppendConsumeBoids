@@ -132,7 +132,6 @@ public partial class AppendConsumeBoids : MonoBehaviour
 
     private void Update()
     {
-        // Update Pool data.
         GraphicsBuffer.CopyCount(PooledAgentBuffer, PooledCountBuffer, 0);
         PooledCountBuffer.GetData(_pooledCountBuffer);
         PooledAgentCount = (int)_pooledCountBuffer[0];
@@ -150,8 +149,8 @@ public partial class AppendConsumeBoids : MonoBehaviour
                 _emitAgentsBuffer.Add(new BoidsAgent()
                 {
                     position = position,
-                    velocity = UnityEngine.Random.onUnitSphere * boidsParameter.maxAgentSpeed,
-                    lifeTime = 60,
+                    velocity = UnityEngine.Random.onUnitSphere,
+                    lifeTime = 30,
                     status   = 1
                 });
             }
@@ -318,12 +317,13 @@ public partial class AppendConsumeBoids : MonoBehaviour
 
         // Emit
         var emitAgentCount = _emitAgentsBuffer.Count;
-        threadGroups = GetThreadGroups(emitAgentCount, _tgsEmitAgent);
 
-        if (0 < threadGroups.x)
+        if (0 < emitAgentCount)
         {
-            cs.SetInt(PID._EmitAgentCount, emitAgentCount);
+            threadGroups = GetThreadGroups(emitAgentCount, _tgsEmitAgent);
+
             EmitAgentBuffer.SetData(_emitAgentsBuffer);
+            cs.SetInt   (PID._EmitAgentCount, emitAgentCount);
             cs.SetBuffer(_kernelEmitAgent, PID._EmitAgentBuffer, EmitAgentBuffer);
             cs.Dispatch (_kernelEmitAgent, threadGroups.x, threadGroups.y, threadGroups.z);
         }
@@ -332,11 +332,13 @@ public partial class AppendConsumeBoids : MonoBehaviour
         threadGroups = GetThreadGroups(boidsParameter.maxAgentCount, _tgsUpdateAgent);
         cs.Dispatch(_kernelUpdateAgent, threadGroups.x, threadGroups.y, threadGroups.z);
 
-        // Sort
-        var agentCount = boidsParameter.maxAgentCount;
-        cs.SetInt(PID._AgentCount, agentCount);
-        
+        // Sort Agents
+        var agentCount    = boidsParameter.maxAgentCount;
         var sortBlockSize = 2;
+
+        threadGroups = GetThreadGroups(agentCount, _tgsBitonicSort);
+        cs.SetInt(PID._AgentCount, agentCount);
+
         while (sortBlockSize <= agentCount)
         {
             var sortBlockWidth  = sortBlockSize;
@@ -345,8 +347,6 @@ public partial class AppendConsumeBoids : MonoBehaviour
             cs.SetInt(PID._SortBlockSize,   sortBlockSize);
             cs.SetInt(PID._SortBlockWidth,  sortBlockWidth);
             cs.SetInt(PID._SortBlockHeight, sortBlockHeight);
-            
-            threadGroups = GetThreadGroups(agentCount, _tgsBitonicSort);
             cs.Dispatch(_kernelBitonicSort, threadGroups.x, threadGroups.y, threadGroups.z);
 
             sortBlockSize *= 2;
