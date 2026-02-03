@@ -21,6 +21,7 @@ StructuredBuffer  <BoidsAgent> _BoidsAgentBufferRead;
 RWStructuredBuffer<BoidsAgent> _BoidsAgentBufferWrite;
 StructuredBuffer  <float3>     _BoidsForceBufferRead;
 RWStructuredBuffer<float3>     _BoidsForceBufferWrite;
+RWStructuredBuffer<uint>       _AgentIndexBuffer;
 RWStructuredBuffer<uint2>      _GridIndicesBuffer;
 
 StructuredBuffer       <BoidsAgent> _EmitAgentBuffer;
@@ -51,7 +52,6 @@ int3   _GridDivision;
 uint   _GridCellCount;
 uint   _SortBlockSize;
 uint   _SortBlockWidth;
-uint   _SortBlockHeight;
 
 int GetGridIndex(float3 position)
 {
@@ -80,7 +80,7 @@ uint3 GetGridCoordFromIndex(uint gridIndex)
     precise uint3 gridCoord;
 
     gridCoord.z = gridIndex / (_GridDivision.x * _GridDivision.y);
-    gridIndex -= gridCoord.z * _GridDivision.x * _GridDivision.y;
+    gridIndex  -= gridCoord.z * _GridDivision.x * _GridDivision.y;
     gridCoord.y = gridIndex / _GridDivision.x;
     gridCoord.x = gridIndex % _GridDivision.x;
 
@@ -134,37 +134,37 @@ void InitializePool(uint3 dtId : SV_DispatchThreadID)
 }
 
 [numthreads(THREAD_SIZE_X, 1, 1)]
-void BitonicSort(uint3 dtId : SV_DispatchThreadID) // in-place sorting
+void BitonicSort(uint3 dtId : SV_DispatchThreadID)
 {
-    if (_AgentCount <= dtId.x)
-    {
-        return;
-    }
+    if(_AgentCount <= dtId.x) return;
 
     uint index  = dtId.x;
     uint index2 = index ^ _SortBlockSize;
 
-    if (index < index2 && index2 < _AgentCount)
+    if(index < index2 && index2 < _AgentCount)
     {
-        BoidsAgent agent1 = _BoidsAgentBufferWrite[index];
-        BoidsAgent agent2 = _BoidsAgentBufferWrite[index2];
+        uint id1 = _AgentIndexBuffer[index];
+        uint id2 = _AgentIndexBuffer[index2];
+
+        BoidsAgent agent1 = _BoidsAgentBufferWrite[id1];
+        BoidsAgent agent2 = _BoidsAgentBufferWrite[id2];
 
         uint gridIndex1 = agent1.gridIndex;
         uint gridIndex2 = agent2.gridIndex;
 
         uint blockIndex = index / _SortBlockWidth;
-        bool ascending  = (blockIndex % 2) == 0; // even -> ascending, odd -> descending
+        bool ascending  = (blockIndex % 2) == 0;
         bool shouldSwap = false;
 
-        if (gridIndex1 != gridIndex2)
+        if(gridIndex1 != gridIndex2)
         {
             shouldSwap = ascending ? (gridIndex1 > gridIndex2) : (gridIndex1 < gridIndex2);
         }
 
-        if (shouldSwap)
+        if(shouldSwap)
         {
-            _BoidsAgentBufferWrite[index]  = agent2;
-            _BoidsAgentBufferWrite[index2] = agent1;
+            _AgentIndexBuffer[index]  = id2;
+            _AgentIndexBuffer[index2] = id1;
         }
     }
 }
@@ -172,25 +172,36 @@ void BitonicSort(uint3 dtId : SV_DispatchThreadID) // in-place sorting
 [numthreads(THREAD_SIZE_X, 1, 1)]
 void UpdateGridIndices(uint3 dtId : SV_DispatchThreadID)
 {
-    if (_AgentCount <= dtId.x)
+    if(_AgentCount <= dtId.x)
     {
         return;
     }
 
-    uint agentIndex       = dtId.x;
-    uint currentGridIndex = _BoidsAgentBufferRead[agentIndex].gridIndex;
-    bool startGridIndex   = agentIndex == 0 || _BoidsAgentBufferRead[agentIndex - 1].gridIndex != currentGridIndex;
+    uint sortedIndex      = dtId.x;
+    uint agentId          = _AgentIndexBuffer[sortedIndex];
+    uint currentGridIndex = _BoidsAgentBufferRead[agentId].gridIndex;
+    uint prevGridIndex    = currentGridIndex;
 
-    if(!startGridIndex) // check 0 or previous index is different.
+    if (0 < sortedIndex)
+    {
+        uint prevAgentId = _AgentIndexBuffer[sortedIndex - 1];
+        prevGridIndex = _BoidsAgentBufferRead[prevAgentId].gridIndex;
+    }
+
+    bool startGridIndex = (sortedIndex == 0) || (prevGridIndex != currentGridIndex);
+
+    if (!startGridIndex)
     {
         return;
     }
 
-    uint endGridIndex = agentIndex;
+    uint endGridIndex = sortedIndex;
 
-    for (uint i = agentIndex + 1; i < _AgentCount; i++)
+    for (uint i = sortedIndex + 1; i < _AgentCount; i++)
     {
-        if (_BoidsAgentBufferRead[i].gridIndex == currentGridIndex)
+        uint nextAgentId = _AgentIndexBuffer[i];
+
+        if (_BoidsAgentBufferRead[nextAgentId].gridIndex == currentGridIndex)
         {
             endGridIndex = i;
         }
@@ -200,24 +211,22 @@ void UpdateGridIndices(uint3 dtId : SV_DispatchThreadID)
         }
     }
 
-    // Set grid indices range for this grid cell
     if (currentGridIndex < _GridCellCount)
     {
-        _GridIndicesBuffer[currentGridIndex] = uint2(agentIndex, endGridIndex);
+        _GridIndicesBuffer[currentGridIndex] = uint2(sortedIndex, endGridIndex);
     }
 }
 
 [numthreads(THREAD_SIZE_X, 1, 1)]
 void UpdateStatus(uint3 dtId : SV_DispatchThreadID)
 {
-    const uint agentId = dtId.x;
-
-    if(_MaxAgentCount <= agentId)
+    if(_MaxAgentCount <= dtId.x)
     {
         return;
     }
 
-    BoidsAgent agent = _BoidsAgentBufferWrite[agentId];
+    uint       agentId = dtId.x;
+    BoidsAgent agent   = _BoidsAgentBufferWrite[agentId];
 
     if (0 < agent.lifeTime)
     {
@@ -230,14 +239,6 @@ void UpdateStatus(uint3 dtId : SV_DispatchThreadID)
         {
             _PooledAgentBufferAppend.Append(agentId);
         }
-    }
-    else if (agent.status == 1)
-    {
-        // Handle agents with lifeTime <= 0 that are still marked as active
-        // This ensures they are returned to the pool
-        agent.status = 0;
-        _BoidsAgentBufferWrite[agentId] = agent;
-        _PooledAgentBufferAppend.Append(agentId);
     }
 }
 
@@ -272,8 +273,8 @@ void UpdateForce(uint3 dtId : SV_DispatchThreadID)
         return;
     }
 
-    float3 P_position = _BoidsAgentBufferRead[agentId].position;
-    float3 P_velocity = _BoidsAgentBufferRead[agentId].velocity;
+    float3 P_position  = _BoidsAgentBufferRead[agentId].position;
+    float3 P_velocity  = _BoidsAgentBufferRead[agentId].velocity;
     uint   P_gridIndex = _BoidsAgentBufferRead[agentId].gridIndex;
     int3   P_gridCoord = GetGridCoordFromIndex(P_gridIndex);
 
@@ -304,7 +305,8 @@ void UpdateForce(uint3 dtId : SV_DispatchThreadID)
         // Sample neighboring agents in this grid cell
         for (uint i = startIndex; i <= endIndex && i < _AgentCount; i++)
         {
-            BoidsAgent neighbor = _BoidsAgentBufferRead[i];
+            uint       neighborAgentId = _AgentIndexBuffer[i];
+            BoidsAgent neighbor        = _BoidsAgentBufferRead[neighborAgentId];
 
             if(neighbor.status == 0)
             {
