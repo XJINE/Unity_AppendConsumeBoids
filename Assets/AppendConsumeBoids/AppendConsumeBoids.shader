@@ -94,7 +94,6 @@
             color            = _GridColors[agent.gridIndex];
             #endif
 
-            color = 1;
             float4 c = tex2D (_MainTex, IN.uv_MainTex) * color;
 
             o.Albedo     = c.rgb;

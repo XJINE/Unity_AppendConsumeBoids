@@ -126,5 +126,8 @@ public partial class AppendConsumeBoidsRenderer:MonoBehaviour
      {
          _commandBuffer?.Dispose();
          _commandBuffer = null;
+
+         _gridColorBuffer?.Dispose();
+         _gridColorBuffer = null;
      }
 }}
