@@ -8,6 +8,7 @@ public partial class AppendConsumeBoidsRenderer
     {
         public static readonly int _BoidsAgentBuffer = Shader.PropertyToID(nameof(_BoidsAgentBuffer));
         public static readonly int _AgentScale       = Shader.PropertyToID(nameof(_AgentScale));
+        public static readonly int _GridColors       = Shader.PropertyToID(nameof(_GridColors));
     }
 }
 
@@ -23,6 +24,8 @@ public partial class AppendConsumeBoidsRenderer:MonoBehaviour
      private AppendConsumeBoids _appendConsumeBoids;
      private GraphicsBuffer     _commandBuffer;
      private RenderParams       _renderParams;
+     private Color[]            _gridColors;
+     private GraphicsBuffer     _gridColorBuffer;
 
      #endregion Field
 
@@ -101,6 +104,22 @@ public partial class AppendConsumeBoidsRenderer:MonoBehaviour
 
          _commandBuffer = new GraphicsBuffer(GraphicsBuffer.Target.IndirectArguments, args.Length, sizeof(uint));
          _commandBuffer.SetData(args);
+
+         
+         var gridDivision = _appendConsumeBoids.FieldParameter.gridDivision;
+
+         _gridColors = new Color[gridDivision.x * gridDivision.y * gridDivision.z];
+
+         for(var i = 0; i < _gridColors.Length; i++)
+         {
+             Random.InitState(12345 + i);
+             _gridColors[i] = Random.ColorHSV(0, 1, 1, 1, 1, 1, 1, 1);
+         }
+
+         _gridColorBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, _gridColors.Length, sizeof(float) * 4);
+         _gridColorBuffer.SetData(_gridColors);
+
+         agentMaterial.SetBuffer(PID._GridColors, _gridColorBuffer);
      }
 
      private void DisposeBuffer()

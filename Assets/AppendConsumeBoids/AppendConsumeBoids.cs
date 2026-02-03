@@ -312,9 +312,11 @@ public partial class AppendConsumeBoids : MonoBehaviour
 
         cs.SetFloat(PID._DeltaTime, Time.deltaTime);
 
+        // Update Status
         threadGroups = GetThreadGroups(boidsParameter.maxAgentCount, _tgsUpdateStatus);
         cs.Dispatch(_kernelUpdateStatus, threadGroups.x, threadGroups.y, threadGroups.z);
 
+        // Emit
         var emitAgentCount = _emitAgentsBuffer.Count;
         threadGroups = GetThreadGroups(emitAgentCount, _tgsEmitAgent);
 
@@ -326,9 +328,11 @@ public partial class AppendConsumeBoids : MonoBehaviour
             cs.Dispatch (_kernelEmitAgent, threadGroups.x, threadGroups.y, threadGroups.z);
         }
 
+        // Update Agents
         threadGroups = GetThreadGroups(boidsParameter.maxAgentCount, _tgsUpdateAgent);
         cs.Dispatch(_kernelUpdateAgent, threadGroups.x, threadGroups.y, threadGroups.z);
 
+        // Sort
         var agentCount = boidsParameter.maxAgentCount;
         cs.SetInt(PID._AgentCount, agentCount);
         
@@ -348,9 +352,11 @@ public partial class AppendConsumeBoids : MonoBehaviour
             sortBlockSize *= 2;
         }
 
+        // Update Indices
         threadGroups = GetThreadGroups(agentCount, _tgsUpdateGridIndices);
         cs.Dispatch(_kernelUpdateGridIndices, threadGroups.x, threadGroups.y, threadGroups.z);
 
+        // Update Force
         threadGroups = GetThreadGroups(boidsParameter.maxAgentCount, _tgsUpdateForce);
         cs.Dispatch(_kernelUpdateForce, threadGroups.x, threadGroups.y, threadGroups.z);
 
@@ -361,4 +367,37 @@ public partial class AppendConsumeBoids : MonoBehaviour
             return new Vector3Int(Mathf.CeilToInt((float)dataCount / threadGroupSize.x), 1, 1);
         }
     }
+
+    // private void SortAgentsByGridIndex()
+    // {
+    //     var cs             = boidsComputeShader;
+    //     var numElement     = (uint) boidsParameter.ActualAgentCount;
+    //     var log2NumElement = 0; // means exponent
+    //     var temp           = numElement;
+    //
+    //     while (1 < temp)
+    //     {
+    //         temp >>= 1; // means temp /= 2
+    //         log2NumElement++;
+    //     }
+    //
+    //     var paddedSize = 1u << log2NumElement; // means 2 ^ log2NumElement
+    //
+    //     if (paddedSize < numElement)
+    //     {
+    //         paddedSize <<= 1; // means paddedSize *= 2
+    //     }
+    //
+    //     for (var k = 2; k <= paddedSize; k <<= 1) // means k *= 2
+    //     {
+    //         for (var j = k >> 1; j > 0; j >>= 1) // means j /= 2
+    //         {
+    //             var threadGroups = GetThreadGroups((int)paddedSize, _tgsBitonicSort);
+    //
+    //             cs.SetInt(PID._SortBlockSize,  j);
+    //             cs.SetInt(PID._SortBlockWidth, k);
+    //             cs.Dispatch(_kernelBitonicSort, threadGroups.x, threadGroups.y, threadGroups.z);
+    //         }
+    //     }
+    // }
 }}

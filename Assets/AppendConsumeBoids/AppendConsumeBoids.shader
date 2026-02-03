@@ -23,6 +23,7 @@
 
         struct BoidsAgent
         {
+            uint   gridIndex;
             float3 position;
             float3 velocity;
             float  lifeTime;
@@ -31,6 +32,7 @@
 
         #ifdef UNITY_PROCEDURAL_INSTANCING_ENABLED
         StructuredBuffer<BoidsAgent> _BoidsAgentBuffer;
+        StructuredBuffer<float4>     _GridColors;
         #endif
 
         sampler2D _MainTex;
@@ -85,7 +87,15 @@
 
         void surf (Input IN, inout SurfaceOutputStandard o)
         {
-            float4 c = tex2D (_MainTex, IN.uv_MainTex) * _Color;
+            float4 color = 1;
+
+            #ifdef UNITY_PROCEDURAL_INSTANCING_ENABLED
+            BoidsAgent agent = _BoidsAgentBuffer[unity_InstanceID];
+            color            = _GridColors[agent.gridIndex];
+            #endif
+
+            color = 1;
+            float4 c = tex2D (_MainTex, IN.uv_MainTex) * color;
 
             o.Albedo     = c.rgb;
             o.Metallic   = _Metallic;
