@@ -53,17 +53,17 @@ public partial class AppendConsumeBoids : MonoBehaviour
     public UnityEvent parameterUpdated;
     public UnityEvent bufferUpdated;
 
-    private int _kernelIndexInitializePool;
-    private int _kernelIndexUpdateStatus;
-    private int _kernelIndexEmitAgent;
-    private int _kernelIndexUpdateForce;
-    private int _kernelIndexUpdateAgent;
+    private int _kernelInitializePool;
+    private int _kernelUpdateStatus;
+    private int _kernelEmitAgent;
+    private int _kernelUpdateForce;
+    private int _kernelUpdateAgent;
 
-    private Vector3Int _threadGroupSizeInitializePool;
-    private Vector3Int _threadGroupSizeUpdateStatus;
-    private Vector3Int _threadGroupSizeEmitAgent;
-    private Vector3Int _threadGroupSizeUpdateForce;
-    private Vector3Int _threadGroupSizeUpdateAgent;
+    private Vector3Int _tgsInitializePool;
+    private Vector3Int _tgsUpdateStatus;
+    private Vector3Int _tgsEmitAgent;
+    private Vector3Int _tgsUpdateForce;
+    private Vector3Int _tgsUpdateAgent;
 
     private Vector3   []     _boidsForceBuffer;
     private BoidsAgent[]     _boidsAgentBuffer;
@@ -92,17 +92,17 @@ public partial class AppendConsumeBoids : MonoBehaviour
     {
         var cs = boidsComputeShader;
 
-        _kernelIndexInitializePool = cs.FindKernel("InitializePool");
-        _kernelIndexUpdateStatus   = cs.FindKernel("UpdateStatus");
-        _kernelIndexEmitAgent      = cs.FindKernel("EmitAgent");
-        _kernelIndexUpdateForce    = cs.FindKernel("UpdateForce");
-        _kernelIndexUpdateAgent    = cs.FindKernel("UpdateAgent");
+        _kernelInitializePool = cs.FindKernel("InitializePool");
+        _kernelUpdateStatus   = cs.FindKernel("UpdateStatus");
+        _kernelEmitAgent      = cs.FindKernel("EmitAgent");
+        _kernelUpdateForce    = cs.FindKernel("UpdateForce");
+        _kernelUpdateAgent    = cs.FindKernel("UpdateAgent");
 
-        _threadGroupSizeInitializePool = GetThreadGroupSize(_kernelIndexInitializePool);
-        _threadGroupSizeUpdateStatus   = GetThreadGroupSize(_kernelIndexUpdateStatus);
-        _threadGroupSizeEmitAgent      = GetThreadGroupSize(_kernelIndexEmitAgent);
-        _threadGroupSizeUpdateForce    = GetThreadGroupSize(_kernelIndexUpdateForce);
-        _threadGroupSizeUpdateAgent    = GetThreadGroupSize(_kernelIndexUpdateAgent);
+        _tgsInitializePool = GetThreadGroupSize(_kernelInitializePool);
+        _tgsUpdateStatus   = GetThreadGroupSize(_kernelUpdateStatus);
+        _tgsEmitAgent      = GetThreadGroupSize(_kernelEmitAgent);
+        _tgsUpdateForce    = GetThreadGroupSize(_kernelUpdateForce);
+        _tgsUpdateAgent    = GetThreadGroupSize(_kernelUpdateAgent);
 
         return;
 
@@ -224,23 +224,23 @@ public partial class AppendConsumeBoids : MonoBehaviour
 
         // SetBuffer
 
-        cs.SetBuffer(_kernelIndexUpdateStatus, PID._BoidsAgentBufferWrite,   BoidsAgentBuffer);
-        cs.SetBuffer(_kernelIndexUpdateStatus, PID._PooledAgentBufferAppend, PooledAgentBuffer);
+        cs.SetBuffer(_kernelUpdateStatus, PID._BoidsAgentBufferWrite,   BoidsAgentBuffer);
+        cs.SetBuffer(_kernelUpdateStatus, PID._PooledAgentBufferAppend, PooledAgentBuffer);
 
-        cs.SetBuffer(_kernelIndexEmitAgent, PID._PooledAgentBufferConsume, PooledAgentBuffer);
-        cs.SetBuffer(_kernelIndexEmitAgent, PID._BoidsAgentBufferWrite,    BoidsAgentBuffer);
+        cs.SetBuffer(_kernelEmitAgent, PID._PooledAgentBufferConsume, PooledAgentBuffer);
+        cs.SetBuffer(_kernelEmitAgent, PID._BoidsAgentBufferWrite,    BoidsAgentBuffer);
 
-        cs.SetBuffer(_kernelIndexUpdateForce, PID._BoidsAgentBufferRead,  BoidsAgentBuffer);
-        cs.SetBuffer(_kernelIndexUpdateForce, PID._BoidsForceBufferWrite, BoidsForceBuffer);
+        cs.SetBuffer(_kernelUpdateForce, PID._BoidsAgentBufferRead,  BoidsAgentBuffer);
+        cs.SetBuffer(_kernelUpdateForce, PID._BoidsForceBufferWrite, BoidsForceBuffer);
 
-        cs.SetBuffer(_kernelIndexUpdateAgent, PID._BoidsAgentBufferWrite, BoidsAgentBuffer);
-        cs.SetBuffer(_kernelIndexUpdateAgent, PID._BoidsForceBufferRead,  BoidsForceBuffer);
+        cs.SetBuffer(_kernelUpdateAgent, PID._BoidsAgentBufferWrite, BoidsAgentBuffer);
+        cs.SetBuffer(_kernelUpdateAgent, PID._BoidsForceBufferRead,  BoidsForceBuffer);
 
         // NOTE:
         // Append/Consume buffer must be initialized by ComputeShader.
         boidsComputeShader.SetInt   (PID._MaxAgentCount, maxCount);
-        boidsComputeShader.SetBuffer(_kernelIndexInitializePool, PID._PooledAgentBufferAppend, PooledAgentBuffer);
-        boidsComputeShader.Dispatch (_kernelIndexInitializePool, Mathf.CeilToInt((float)maxCount / _threadGroupSizeInitializePool.x), 1, 1);
+        boidsComputeShader.SetBuffer(_kernelInitializePool, PID._PooledAgentBufferAppend, PooledAgentBuffer);
+        boidsComputeShader.Dispatch (_kernelInitializePool, Mathf.CeilToInt((float)maxCount / _tgsInitializePool.x), 1, 1);
     }
 
     private void DisposeBuffer()
@@ -268,24 +268,24 @@ public partial class AppendConsumeBoids : MonoBehaviour
 
         cs.SetFloat(PID._DeltaTime, Time.deltaTime);
 
-        threadGroups = GetThreadGroups(boidsParameter.maxAgentCount, _threadGroupSizeUpdateStatus);
-        cs.Dispatch(_kernelIndexUpdateStatus, threadGroups.x, threadGroups.y, threadGroups.z);
+        threadGroups = GetThreadGroups(boidsParameter.maxAgentCount, _tgsUpdateStatus);
+        cs.Dispatch(_kernelUpdateStatus, threadGroups.x, threadGroups.y, threadGroups.z);
 
         var emitAgentCount = _emitAgentsBuffer.Count;
-        threadGroups = GetThreadGroups(emitAgentCount, _threadGroupSizeEmitAgent);
+        threadGroups = GetThreadGroups(emitAgentCount, _tgsEmitAgent);
         if (0 < threadGroups.x)
         {
             cs.SetInt(PID._EmitAgentCount, emitAgentCount);
             EmitAgentBuffer.SetData(_emitAgentsBuffer);
-            cs.SetBuffer(_kernelIndexEmitAgent, PID._EmitAgentBuffer, EmitAgentBuffer);
-            cs.Dispatch (_kernelIndexEmitAgent, threadGroups.x, threadGroups.y, threadGroups.z);
+            cs.SetBuffer(_kernelEmitAgent, PID._EmitAgentBuffer, EmitAgentBuffer);
+            cs.Dispatch (_kernelEmitAgent, threadGroups.x, threadGroups.y, threadGroups.z);
         }
 
-        threadGroups = GetThreadGroups(boidsParameter.maxAgentCount, _threadGroupSizeUpdateForce);
-        cs.Dispatch(_kernelIndexUpdateForce, threadGroups.x, threadGroups.y, threadGroups.z);
+        threadGroups = GetThreadGroups(boidsParameter.maxAgentCount, _tgsUpdateForce);
+        cs.Dispatch(_kernelUpdateForce, threadGroups.x, threadGroups.y, threadGroups.z);
 
-        threadGroups = GetThreadGroups(boidsParameter.maxAgentCount, _threadGroupSizeUpdateAgent);
-        cs.Dispatch(_kernelIndexUpdateAgent, threadGroups.x, threadGroups.y, threadGroups.z);
+        threadGroups = GetThreadGroups(boidsParameter.maxAgentCount, _tgsUpdateAgent);
+        cs.Dispatch(_kernelUpdateAgent, threadGroups.x, threadGroups.y, threadGroups.z);
 
         return;
 
