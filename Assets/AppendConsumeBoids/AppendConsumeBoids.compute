@@ -3,11 +3,14 @@
 #pragma kernel EmitAgent
 #pragma kernel UpdateForce
 #pragma kernel UpdateAgent
+#pragma kernel BitonicSort
+#pragma kernel UpdateGridIndices
 
 #define THREAD_SIZE_X 256 // or 64, 128
 
 struct BoidsAgent
 {
+    uint   gridIndex;
     float3 position;
     float3 velocity;
     float  lifeTime;
@@ -18,6 +21,7 @@ StructuredBuffer  <BoidsAgent> _BoidsAgentBufferRead;
 RWStructuredBuffer<BoidsAgent> _BoidsAgentBufferWrite;
 StructuredBuffer  <float3>     _BoidsForceBufferRead;
 RWStructuredBuffer<float3>     _BoidsForceBufferWrite;
+RWStructuredBuffer<uint2>      _GridIndicesBuffer;
 
 StructuredBuffer       <BoidsAgent> _EmitAgentBuffer;
 AppendStructuredBuffer <uint>       _PooledAgentBufferAppend; // uint means agent ID
@@ -25,6 +29,7 @@ ConsumeStructuredBuffer<uint>       _PooledAgentBufferConsume;
 
 uint  _EmitAgentCount;
 uint  _MaxAgentCount;
+uint  _AgentCount;
 float _MaxAgentSpeed;
 float _MaxAgentForce;
 float _DeltaTime;
@@ -40,14 +45,66 @@ float _AvoidWallWeight;
 
 float4 _WallCenter;
 float4 _WallSize;
+float4 _GridMinCoord;
+float4 _GridCellSize;
+int3   _GridDivision;
+uint   _GridCellCount;
+uint   _SortBlockSize;
+uint   _SortBlockWidth;
+uint   _SortBlockHeight;
 
-float3 limit(float3 vec, float max)
+int GetGridIndex(float3 position)
+{
+    float3 localPos  = position - _GridMinCoord.xyz;
+    int3   gridCoord = int3(floor(localPos.x / _GridCellSize.x),
+                            floor(localPos.y / _GridCellSize.y),
+                            floor(localPos.z / _GridCellSize.z));
+
+    gridCoord.x = clamp(gridCoord.x, 0, _GridDivision.x - 1);
+    gridCoord.y = clamp(gridCoord.y, 0, _GridDivision.y - 1);
+    gridCoord.z = clamp(gridCoord.z, 0, _GridDivision.z - 1);
+
+    return gridCoord.x
+         + gridCoord.y * _GridDivision.x
+         + gridCoord.z * _GridDivision.x * _GridDivision.y;
+}
+
+uint3 GetGridCoordFromIndex(uint gridIndex)
+{
+    // NOTE:
+    // Since gridIndex is calculated as follows.
+    // grindIndex = gridCoord.x
+    //            + gridCoord.y * _GridDivision.x
+    //            + gridCoord.z * _GridDivision.x * _GridDivision.y;
+
+    precise uint3 gridCoord;
+
+    gridCoord.z = gridIndex / (_GridDivision.x * _GridDivision.y);
+    gridIndex -= gridCoord.z * _GridDivision.x * _GridDivision.y;
+    gridCoord.y = gridIndex / _GridDivision.x;
+    gridCoord.x = gridIndex % _GridDivision.x;
+
+    return gridCoord;
+}
+
+uint GetGridIndexFromCoord(uint3 gridCoord)
+{
+    gridCoord.x = clamp(gridCoord.x, 0, _GridDivision.x - 1);
+    gridCoord.y = clamp(gridCoord.y, 0, _GridDivision.y - 1);
+    gridCoord.z = clamp(gridCoord.z, 0, _GridDivision.z - 1);
+    
+    return gridCoord.x
+         + gridCoord.y * _GridDivision.x
+         + gridCoord.z * _GridDivision.x * _GridDivision.y;
+}
+
+float3 Limit(float3 vec, float max)
 {
     float len = length(vec);
     return max < len && 0 < len ? vec.xyz * (max / len) : vec.xyz;
 }
 
-float3 avoidWall(float3 position)
+float3 AvoidWall(float3 position)
 {
     float3 center = _WallCenter.xyz;
     float3 size   = _WallSize.xyz;
@@ -74,6 +131,80 @@ void InitializePool(uint3 dtId : SV_DispatchThreadID)
     }
 
     _PooledAgentBufferAppend.Append(dtId.x);
+}
+
+[numthreads(THREAD_SIZE_X, 1, 1)]
+void BitonicSort(uint3 dtId : SV_DispatchThreadID) // in-place sorting
+{
+    if (_AgentCount <= dtId.x)
+    {
+        return;
+    }
+
+    uint index  = dtId.x;
+    uint index2 = index ^ _SortBlockSize;
+
+    if (index < index2 && index2 < _AgentCount)
+    {
+        BoidsAgent agent1 = _BoidsAgentBufferWrite[index];
+        BoidsAgent agent2 = _BoidsAgentBufferWrite[index2];
+
+        uint gridIndex1 = agent1.gridIndex;
+        uint gridIndex2 = agent2.gridIndex;
+
+        uint blockIndex = index / _SortBlockWidth;
+        bool ascending  = (blockIndex % 2) == 0; // even -> ascending, odd -> descending
+        bool shouldSwap = false;
+
+        if (gridIndex1 != gridIndex2)
+        {
+            shouldSwap = ascending ? (gridIndex1 > gridIndex2) : (gridIndex1 < gridIndex2);
+        }
+
+        if (shouldSwap)
+        {
+            _BoidsAgentBufferWrite[index]  = agent2;
+            _BoidsAgentBufferWrite[index2] = agent1;
+        }
+    }
+}
+
+[numthreads(THREAD_SIZE_X, 1, 1)]
+void UpdateGridIndices(uint3 dtId : SV_DispatchThreadID)
+{
+    if (_AgentCount <= dtId.x)
+    {
+        return;
+    }
+
+    uint agentIndex       = dtId.x;
+    uint currentGridIndex = _BoidsAgentBufferRead[agentIndex].gridIndex;
+    bool startGridIndex   = agentIndex == 0 || _BoidsAgentBufferRead[agentIndex - 1].gridIndex != currentGridIndex;
+
+    if(!startGridIndex) // check 0 or previous index is different.
+    {
+        return;
+    }
+
+    uint endGridIndex = agentIndex;
+
+    for (uint i = agentIndex + 1; i < _AgentCount; i++)
+    {
+        if (_BoidsAgentBufferRead[i].gridIndex == currentGridIndex)
+        {
+            endGridIndex = i;
+        }
+        else
+        {
+            break;
+        }
+    }
+
+    // Set grid indices range for this grid cell
+    if (currentGridIndex < _GridCellCount)
+    {
+        _GridIndicesBuffer[currentGridIndex] = uint2(agentIndex, endGridIndex);
+    }
 }
 
 [numthreads(THREAD_SIZE_X, 1, 1)]
@@ -110,31 +241,33 @@ void EmitAgent(uint3 dtId : SV_DispatchThreadID)
         return;
     }
 
-    BoidsAgent emit    = _EmitAgentBuffer[dtId.x];
+    BoidsAgent agent   = _EmitAgentBuffer[dtId.x];
     uint       agentId = _PooledAgentBufferConsume.Consume();
 
-    _BoidsAgentBufferWrite[agentId] = emit;
+    agent.gridIndex = GetGridIndex(agent.position);
+
+    _BoidsAgentBufferWrite[agentId] = agent;
 }
 
 [numthreads(THREAD_SIZE_X, 1, 1)]
 void UpdateForce(uint3 dtId : SV_DispatchThreadID)
 {
-    const uint agentId = dtId.x;
-
-    if(_MaxAgentCount <= agentId)
+    if(_MaxAgentCount <= dtId.x)
     {
         return;
     }
 
-    BoidsAgent agent = _BoidsAgentBufferRead[agentId];
+    uint agentId = dtId.x;
 
-    if(agent.status == 0)
+    if(_BoidsAgentBufferRead[agentId].status == 0)
     {
         return;
     }
 
-    float3 P_position = agent.position;
-    float3 P_velocity = agent.velocity;
+    float3 P_position = _BoidsAgentBufferRead[agentId].position;
+    float3 P_velocity = _BoidsAgentBufferRead[agentId].velocity;
+    uint   P_gridIndex = _BoidsAgentBufferRead[agentId].gridIndex;
+    int3   P_gridCoord = GetGridCoordFromIndex(P_gridIndex);
 
     float3 sepPosSum = 0;
     float3 aliVelSum = 0;
@@ -144,45 +277,60 @@ void UpdateForce(uint3 dtId : SV_DispatchThreadID)
     int aliCount = 0;
     int cohCount = 0;
 
-    // Sample neighboring agent
-    for (uint i = 0; i < _MaxAgentCount; i++)
+    for (int dZ = -1; dZ <= 1; dZ++){
+    for (int dY = -1; dY <= 1; dY++){
+    for (int dX = -1; dX <= 1; dX++)
     {
-        BoidsAgent neighbor = _BoidsAgentBufferRead[i];
+        int3 N_gridCoord = P_gridCoord + int3(dX, dY, dZ);
+        uint N_gridIndex = GetGridIndexFromCoord(N_gridCoord);
 
-        if(neighbor.status == 0)
+        uint2 gridIndices = _GridIndicesBuffer[N_gridIndex];
+        uint  startIndex  = gridIndices.x;
+        uint  endIndex    = gridIndices.y;
+
+        if (startIndex == 0xFFFFFFFF || endIndex == 0xFFFFFFFF) // 0xFFFFFFFF means max uint value.
         {
             continue;
         }
-
-        float3 N_position = neighbor.position;
-        float3 N_velocity = neighbor.velocity;
-        float3 diff       = P_position - N_position;
-        float  dist       = length(diff);
-
-        // Separate
-        if (0.0 < dist && dist <= _SeparateRadius)
+        
+        // Sample neighboring agents in this grid cell
+        for (uint i = startIndex; i <= endIndex && i < _AgentCount; i++)
         {
-            float3 repulse  = normalize(diff);
-                   repulse /= dist;
+            BoidsAgent neighbor = _BoidsAgentBufferRead[i];
 
-            sepPosSum += repulse;
-            sepCount  += 1;
-        }
+            if(neighbor.status == 0)
+            {
+                continue;
+            }
 
-        // Alignment
-        if (0.0 < dist && dist <= _AlignmentRadius)
-        {
-            aliVelSum += N_velocity;
-            aliCount  += 1;
-        }
+            float3 N_position = neighbor.position;
+            float3 N_velocity = neighbor.velocity;
+            float3 diff       = P_position - N_position;
+            float  dist       = length(diff);
 
-        // Cohesion
-        if (dist > 0.0 && dist <= _CohesionRadius)
-        {
-            cohPosSum += N_position;
-            cohCount  += 1;
+            // Separate
+            if (0.0 < dist && dist <= _SeparateRadius)
+            {
+                float3 repulse = normalize(diff) / dist;
+                sepPosSum += repulse;
+                sepCount  += 1;
+            }
+
+            // Alignment
+            if (0.0 < dist && dist <= _AlignmentRadius)
+            {
+                aliVelSum += N_velocity;
+                aliCount  += 1;
+            }
+
+            // Cohesion
+            if (dist > 0.0 && dist <= _CohesionRadius)
+            {
+                cohPosSum += N_position;
+                cohCount  += 1;
+            }
         }
-    }
+    }}}
 
     float3 force    = 0;
     float3 sepForce = 0;
@@ -195,7 +343,7 @@ void UpdateForce(uint3 dtId : SV_DispatchThreadID)
         sepForce = sepPosSum / (float)sepCount;
         sepForce = normalize(sepForce) * _MaxAgentSpeed;
         sepForce = sepForce - P_velocity;
-        sepForce = limit(sepForce, _MaxAgentForce);
+        sepForce = Limit(sepForce, _MaxAgentForce);
     }
 
     // Alignment
@@ -204,7 +352,7 @@ void UpdateForce(uint3 dtId : SV_DispatchThreadID)
         aliForce = aliVelSum / (float)aliCount;
         aliForce = normalize(aliForce) * _MaxAgentSpeed;
         aliForce = aliForce - P_velocity;
-        aliForce = limit(aliForce, _MaxAgentForce);
+        aliForce = Limit(aliForce, _MaxAgentForce);
     }
 
     // Cohesion
@@ -214,7 +362,7 @@ void UpdateForce(uint3 dtId : SV_DispatchThreadID)
         cohForce  = cohPosSum - P_position;
         cohForce  = normalize(cohForce) * _MaxAgentSpeed;
         cohForce  = cohForce - P_velocity;
-        cohForce  = limit(cohForce, _MaxAgentForce);
+        cohForce  = Limit(cohForce, _MaxAgentForce);
     }
 
     force += aliForce * _AlignmentWeight;
@@ -227,14 +375,13 @@ void UpdateForce(uint3 dtId : SV_DispatchThreadID)
 [numthreads(THREAD_SIZE_X, 1, 1)]
 void UpdateAgent(uint3 dtId : SV_DispatchThreadID)
 {
-    const uint agentId = dtId.x;
-
-    if(_MaxAgentCount <= agentId)
+    if(_MaxAgentCount <= dtId.x)
     {
         return;
     }
 
-    BoidsAgent agent = _BoidsAgentBufferWrite[agentId];
+    uint       agentId = dtId.x;
+    BoidsAgent agent   = _BoidsAgentBufferWrite[agentId];
 
     if(agent.status == 0)
     {
@@ -242,10 +389,11 @@ void UpdateAgent(uint3 dtId : SV_DispatchThreadID)
     }
 
     float3 force  = _BoidsForceBufferRead[agentId];
-           force += avoidWall(agent.position) * _AvoidWallWeight;
+           force += AvoidWall(agent.position) * _AvoidWallWeight;
 
+    agent.gridIndex = GetGridIndex(agent.position);
     agent.velocity += force * _DeltaTime;
-    agent.velocity = limit(agent.velocity, _MaxAgentSpeed);
+    agent.velocity  = Limit(agent.velocity, _MaxAgentSpeed);
     agent.position += agent.velocity * _DeltaTime;
 
     _BoidsAgentBufferWrite[agentId] = agent;

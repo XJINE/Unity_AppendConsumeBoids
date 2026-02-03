@@ -26,5 +26,14 @@ public partial class AppendConsumeBoids
         public static readonly int _AvoidWallWeight          = Shader.PropertyToID(nameof(_AvoidWallWeight));
         public static readonly int _WallCenter               = Shader.PropertyToID(nameof(_WallCenter));
         public static readonly int _WallSize                 = Shader.PropertyToID(nameof(_WallSize));
+        public static readonly int _GridMinCoord             = Shader.PropertyToID(nameof(_GridMinCoord));
+        public static readonly int _GridCellSize              = Shader.PropertyToID(nameof(_GridCellSize));
+        public static readonly int _GridDivision               = Shader.PropertyToID(nameof(_GridDivision));
+        public static readonly int _GridCellCount              = Shader.PropertyToID(nameof(_GridCellCount));
+        public static readonly int _GridIndicesBuffer         = Shader.PropertyToID(nameof(_GridIndicesBuffer));
+        public static readonly int _AgentCount                 = Shader.PropertyToID(nameof(_AgentCount));
+        public static readonly int _SortBlockSize              = Shader.PropertyToID(nameof(_SortBlockSize));
+        public static readonly int _SortBlockWidth             = Shader.PropertyToID(nameof(_SortBlockWidth));
+        public static readonly int _SortBlockHeight            = Shader.PropertyToID(nameof(_SortBlockHeight));
     }
 }}

@@ -10,6 +10,7 @@ using BufferType = UnityEngine.GraphicsBuffer.Target;
 namespace GpuBoids {
 public struct BoidsAgent
 {
+    public uint    gridIndex;
     public Vector3 position;
     public Vector3 velocity;
     public float   lifeTime;
@@ -38,8 +39,9 @@ public class BoidsParameter
 [Serializable]
 public class FieldParameter
 {
-    public Vector3 wallCenter = Vector3.zero;
-    public Vector3 wallSize   = new (32.0f, 32.0f, 32.0f);
+    public Vector3    wallCenter   = Vector3.zero;
+    public Vector3    wallSize     = new (32.0f, 32.0f, 32.0f);
+    public Vector3Int gridDivision = new (8, 8, 8);
 }
 
 public partial class AppendConsumeBoids : MonoBehaviour
@@ -58,12 +60,16 @@ public partial class AppendConsumeBoids : MonoBehaviour
     private int _kernelEmitAgent;
     private int _kernelUpdateForce;
     private int _kernelUpdateAgent;
+    private int _kernelBitonicSort;
+    private int _kernelUpdateGridIndices;
 
     private Vector3Int _tgsInitializePool;
     private Vector3Int _tgsUpdateStatus;
     private Vector3Int _tgsEmitAgent;
     private Vector3Int _tgsUpdateForce;
     private Vector3Int _tgsUpdateAgent;
+    private Vector3Int _tgsBitonicSort;
+    private Vector3Int _tgsUpdateGridIndices;
 
     private Vector3   []     _boidsForceBuffer;
     private BoidsAgent[]     _boidsAgentBuffer;
@@ -83,6 +89,7 @@ public partial class AppendConsumeBoids : MonoBehaviour
     public GraphicsBuffer PooledAgentBuffer { get; private set; }
     public GraphicsBuffer PooledCountBuffer { get; private set; }
     public GraphicsBuffer EmitAgentBuffer   { get; private set; }
+    public GraphicsBuffer GridIndicesBuffer { get; private set; }
 
     public int PooledAgentCount { get; private set; }
 
@@ -92,17 +99,21 @@ public partial class AppendConsumeBoids : MonoBehaviour
     {
         var cs = boidsComputeShader;
 
-        _kernelInitializePool = cs.FindKernel("InitializePool");
-        _kernelUpdateStatus   = cs.FindKernel("UpdateStatus");
-        _kernelEmitAgent      = cs.FindKernel("EmitAgent");
-        _kernelUpdateForce    = cs.FindKernel("UpdateForce");
-        _kernelUpdateAgent    = cs.FindKernel("UpdateAgent");
+        _kernelInitializePool    = cs.FindKernel("InitializePool");
+        _kernelUpdateStatus      = cs.FindKernel("UpdateStatus");
+        _kernelEmitAgent         = cs.FindKernel("EmitAgent");
+        _kernelUpdateForce       = cs.FindKernel("UpdateForce");
+        _kernelUpdateAgent       = cs.FindKernel("UpdateAgent");
+        _kernelBitonicSort       = cs.FindKernel("BitonicSort");
+        _kernelUpdateGridIndices = cs.FindKernel("UpdateGridIndices");
 
-        _tgsInitializePool = GetThreadGroupSize(_kernelInitializePool);
-        _tgsUpdateStatus   = GetThreadGroupSize(_kernelUpdateStatus);
-        _tgsEmitAgent      = GetThreadGroupSize(_kernelEmitAgent);
-        _tgsUpdateForce    = GetThreadGroupSize(_kernelUpdateForce);
-        _tgsUpdateAgent    = GetThreadGroupSize(_kernelUpdateAgent);
+        _tgsInitializePool    = GetThreadGroupSize(_kernelInitializePool);
+        _tgsUpdateStatus      = GetThreadGroupSize(_kernelUpdateStatus);
+        _tgsEmitAgent         = GetThreadGroupSize(_kernelEmitAgent);
+        _tgsUpdateForce       = GetThreadGroupSize(_kernelUpdateForce);
+        _tgsUpdateAgent       = GetThreadGroupSize(_kernelUpdateAgent);
+        _tgsBitonicSort       = GetThreadGroupSize(_kernelBitonicSort);
+        _tgsUpdateGridIndices = GetThreadGroupSize(_kernelUpdateGridIndices);
 
         return;
 
@@ -176,6 +187,17 @@ public partial class AppendConsumeBoids : MonoBehaviour
         cs.SetVector(PID._WallCenter, field.wallCenter);
         cs.SetVector(PID._WallSize,   field.wallSize);
 
+        var gridMin      = field.wallCenter - field.wallSize * 0.5f;
+        var gridCellSize = new Vector3(field.wallSize.x / field.gridDivision.x,
+                                       field.wallSize.y / field.gridDivision.y,
+                                       field.wallSize.z / field.gridDivision.z);
+        var gridCellCount = field.gridDivision.x * field.gridDivision.y * field.gridDivision.z;
+
+        cs.SetVector(PID._GridMinCoord,  gridMin);
+        cs.SetVector(PID._GridCellSize,  gridCellSize);
+        cs.SetInts  (PID._GridDivision,  field.gridDivision.x, field.gridDivision.y, field.gridDivision.z);
+        cs.SetInt   (PID._GridCellCount, gridCellCount);
+
         parameterUpdated.Invoke();
     }
 
@@ -196,11 +218,18 @@ public partial class AppendConsumeBoids : MonoBehaviour
     {
         DisposeBuffer();
 
+        var gridDivision  = fieldParameter.gridDivision;
+        var gridCellCount = gridDivision.x * gridDivision.y * gridDivision.z;
+        var gridIndices   = new uint[gridCellCount * 2]; // * 2 for uint2.x, y
+
+        for (var i = 0; i < gridIndices.Length; i++)
+        {
+            gridIndices[i] = uint.MaxValue; // Initialize with invalid indices
+        }
+
         // NOTE:
-        // TThe maxCount should be updated whenever the Buffer is updated.
-        var cs       = boidsComputeShader;
+        // The maxCount should be updated whenever the Buffer is updated.
         var maxCount = boidsParameter.maxAgentCount;
-        cs.SetInt(PID._MaxAgentCount, maxCount);
 
         _boidsForceBuffer = new Vector3[maxCount];
         BoidsForceBuffer  = new GraphicsBuffer(BufferType.Structured, maxCount, Marshal.SizeOf(typeof(Vector3)));
@@ -222,7 +251,12 @@ public partial class AppendConsumeBoids : MonoBehaviour
         EmitAgentBuffer   = new GraphicsBuffer(BufferType.Structured, maxCount, Marshal.SizeOf(typeof(BoidsAgent)));
         EmitAgentBuffer.SetData(_emitAgentsBuffer);
 
-        // SetBuffer
+        GridIndicesBuffer = new GraphicsBuffer(BufferType.Structured, gridCellCount, Marshal.SizeOf(typeof(uint)) * 2);
+        GridIndicesBuffer.SetData(gridIndices);
+
+        var cs = boidsComputeShader;
+
+        cs.SetInt(PID._MaxAgentCount, maxCount);
 
         cs.SetBuffer(_kernelUpdateStatus, PID._BoidsAgentBufferWrite,   BoidsAgentBuffer);
         cs.SetBuffer(_kernelUpdateStatus, PID._PooledAgentBufferAppend, PooledAgentBuffer);
@@ -235,6 +269,13 @@ public partial class AppendConsumeBoids : MonoBehaviour
 
         cs.SetBuffer(_kernelUpdateAgent, PID._BoidsAgentBufferWrite, BoidsAgentBuffer);
         cs.SetBuffer(_kernelUpdateAgent, PID._BoidsForceBufferRead,  BoidsForceBuffer);
+
+        cs.SetBuffer(_kernelBitonicSort, PID._BoidsAgentBufferWrite, BoidsAgentBuffer);
+        
+        cs.SetBuffer(_kernelUpdateGridIndices, PID._BoidsAgentBufferRead, BoidsAgentBuffer);
+        cs.SetBuffer(_kernelUpdateGridIndices, PID._GridIndicesBuffer, GridIndicesBuffer);
+        
+        cs.SetBuffer(_kernelUpdateForce, PID._GridIndicesBuffer, GridIndicesBuffer);
 
         // NOTE:
         // Append/Consume buffer must be initialized by ComputeShader.
@@ -259,6 +300,9 @@ public partial class AppendConsumeBoids : MonoBehaviour
 
         EmitAgentBuffer?.Dispose();
         EmitAgentBuffer = null;
+
+        GridIndicesBuffer?.Dispose();
+        GridIndicesBuffer = null;
     }
 
     private void Simulate()
@@ -273,6 +317,7 @@ public partial class AppendConsumeBoids : MonoBehaviour
 
         var emitAgentCount = _emitAgentsBuffer.Count;
         threadGroups = GetThreadGroups(emitAgentCount, _tgsEmitAgent);
+
         if (0 < threadGroups.x)
         {
             cs.SetInt(PID._EmitAgentCount, emitAgentCount);
@@ -281,11 +326,33 @@ public partial class AppendConsumeBoids : MonoBehaviour
             cs.Dispatch (_kernelEmitAgent, threadGroups.x, threadGroups.y, threadGroups.z);
         }
 
-        threadGroups = GetThreadGroups(boidsParameter.maxAgentCount, _tgsUpdateForce);
-        cs.Dispatch(_kernelUpdateForce, threadGroups.x, threadGroups.y, threadGroups.z);
-
         threadGroups = GetThreadGroups(boidsParameter.maxAgentCount, _tgsUpdateAgent);
         cs.Dispatch(_kernelUpdateAgent, threadGroups.x, threadGroups.y, threadGroups.z);
+
+        var agentCount = boidsParameter.maxAgentCount;
+        cs.SetInt(PID._AgentCount, agentCount);
+        
+        var sortBlockSize = 2;
+        while (sortBlockSize <= agentCount)
+        {
+            var sortBlockWidth  = sortBlockSize;
+            var sortBlockHeight = sortBlockSize / 2;
+            
+            cs.SetInt(PID._SortBlockSize,   sortBlockSize);
+            cs.SetInt(PID._SortBlockWidth,  sortBlockWidth);
+            cs.SetInt(PID._SortBlockHeight, sortBlockHeight);
+            
+            threadGroups = GetThreadGroups(agentCount, _tgsBitonicSort);
+            cs.Dispatch(_kernelBitonicSort, threadGroups.x, threadGroups.y, threadGroups.z);
+
+            sortBlockSize *= 2;
+        }
+
+        threadGroups = GetThreadGroups(agentCount, _tgsUpdateGridIndices);
+        cs.Dispatch(_kernelUpdateGridIndices, threadGroups.x, threadGroups.y, threadGroups.z);
+
+        threadGroups = GetThreadGroups(boidsParameter.maxAgentCount, _tgsUpdateForce);
+        cs.Dispatch(_kernelUpdateForce, threadGroups.x, threadGroups.y, threadGroups.z);
 
         return;
 
